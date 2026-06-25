@@ -1,4 +1,4 @@
-# SPEAR - Javelin Telemetry System
+# SPEAR - Sensor Pack for Evaluating Athletic Releases
 
 Real-time 6-axis inertial telemetry for a thrown javelin. An ESP32 microcontroller streams accelerometer and gyroscope data at 100 Hz over Wi-Fi UDP to a host computer, where a Python pipeline handles bias calibration, quaternion-based attitude estimation, and gravity removal to recover linear acceleration and integrated velocity in the world frame.
 
