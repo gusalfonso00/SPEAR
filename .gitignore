@@ -1,0 +1,16 @@
+# macOS metadata
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# VS Code workspace settings
+.vscode/
+
+# Sensor data logs
+Python/Data Logs/
+
+# Wi-Fi credentials - copy secrets.h.example to secrets.h and fill in values
+Arduino/spear_imu_udp/secrets.h

@@ -1,0 +1,29 @@
+{
+  "source_log": "imu_log_20260507_170157.csv",
+  "characterized_at": "2026-05-07T23:57:20.291715+00:00",
+  "gravity_axis": "+z",
+  "local_gravity_mps2_used": 9.7966,
+  "duration_used_s": 53.36,
+  "n_samples_used": 5337,
+  "accel_bias_mps2": {
+    "x": 0.0655589,
+    "y": 0.1396077,
+    "z": 0.5375637
+  },
+  "accel_noise_std_mps2": {
+    "x": 0.0240443,
+    "y": 0.0220675,
+    "z": 0.0208218
+  },
+  "gyro_bias_dps": {
+    "x": -0.8193102,
+    "y": 0.2163123,
+    "z": -0.2028918
+  },
+  "gyro_noise_std_dps": {
+    "x": 0.0366124,
+    "y": 0.032567,
+    "z": 0.0356597
+  },
+  "notes": "Z-axis bias has gravity (+z, 9.7966 m/s\u00b2) subtracted; stored value is true sensor offset from expected. X/Y bias may be confounded with mounting tilt - re-characterize with a proper fixture for full 3-axis calibration."
+}
