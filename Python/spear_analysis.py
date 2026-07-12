@@ -44,7 +44,17 @@ def load_log(filename=None):
             filename = os.path.join(data_dir, filename)
         print(f"Loading: {os.path.basename(filename)}")
 
-    df = pd.read_csv(filename)
+    # log_imu_udp.py writes a header row, but headerless captures exist too.
+    # Sniff the first line: if it starts with 'seq' it's a header, otherwise
+    # assume the standard 9-column order and assign names ourselves.
+    columns = ['seq', 'ms', 'temp_C', 'ax', 'ay', 'az', 'gx', 'gy', 'gz']
+    with open(filename) as f:
+        has_header = f.readline().lstrip().startswith('seq')
+    if has_header:
+        df = pd.read_csv(filename)
+    else:
+        df = pd.read_csv(filename, header=None, names=columns)
+
     df['t_s'] = (df['ms'] - df['ms'].iloc[0]) / 1000.0
     return df
 
@@ -207,3 +217,129 @@ def plot_acc_and_vel(df, title=None):
 
     plt.tight_layout()
     plt.show()
+
+
+# ---------------------------------------------------------------------------
+# Link characterization: UDP packet loss from sequence numbers
+# ---------------------------------------------------------------------------
+# UDP is fire-and-forget: a lost packet leaves no row and no timestamp in the
+# log. All loss math therefore comes from the seq column. A gap between
+# consecutive received seq values is attributed to the arrival time (ms) of
+# the packet AFTER the gap - the only timestamp we have for it.
+
+
+def compute_loss(df):
+    """
+    Overall packet loss for one recording.
+
+    Expected count comes from the seq span, not the row count: seq is
+    monotonic within a recording, so (last - first + 1) is how many packets
+    the ESP32 sent while we were listening.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Log with a 'seq' column.
+
+    Returns
+    -------
+    dict with keys:
+        expected  : int, packets sent during the recording window
+        received  : int, packets actually logged
+        loss_pct  : float, percentage lost
+    """
+    expected = int(df['seq'].iloc[-1]) - int(df['seq'].iloc[0]) + 1
+    received = len(df)
+    loss_pct = (expected - received) / expected * 100.0
+    return {'expected': expected, 'received': received, 'loss_pct': loss_pct}
+
+
+def find_gaps(df):
+    """
+    Locate every sequence gap in a recording.
+
+    A diff of 1 between consecutive seq values means no loss; any diff > 1
+    is a gap of (diff - 1) consecutive lost packets. Gap size is what
+    separates scattered single drops (RF noise, buffer hiccups) from burst
+    events (signal blockage, antenna null).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Log with 'seq' and 'ms' columns.
+
+    Returns
+    -------
+    pandas.DataFrame with one row per gap:
+        gap_start_seq : first missing sequence number
+        gap_size      : number of consecutive packets lost
+        millis_at_gap : ms timestamp of the packet received AFTER the gap
+                        (lost packets have no timestamp of their own)
+    """
+    seq_diff = df['seq'].diff()
+    gap_rows = df.loc[seq_diff > 1]                    # packet right after each gap
+    gap_size = seq_diff.loc[gap_rows.index] - 1
+
+    return pd.DataFrame({
+        'gap_start_seq': (gap_rows['seq'] - gap_size).astype(int).values,
+        'gap_size':      gap_size.astype(int).values,
+        'millis_at_gap': gap_rows['ms'].values,
+    })
+
+
+def compute_loss_timeseries(df, bin_seconds=1.0):
+    """
+    Packet loss percentage binned over time.
+
+    For each consecutive received pair, the interval carries
+    (seq_diff) expected packets and (seq_diff - 1) lost packets, both
+    attributed to the time bin of the LATER packet - lost packets have no
+    timestamp, so the arrival after the gap is the best time anchor.
+    Note: a burst longer than one bin is still attributed entirely to the
+    bin where reception resumed, so long blockages show as one tall spike.
+
+    Bins where nothing arrived at all (link fully down) have no information
+    and get loss_pct = NaN, which breaks the plotted line instead of drawing
+    a false zero.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Log with 'seq' and 't_s' columns (t_s from load_log).
+    bin_seconds : float
+        Bin width in seconds.
+
+    Returns
+    -------
+    pandas.DataFrame with one row per bin:
+        bin_time_s : bin start time, seconds from start of recording
+        loss_pct   : lost / expected * 100 within the bin (NaN if no data)
+        lost_count : packets lost within the bin
+    """
+    # Per-interval loss, attributed to the later packet of each pair.
+    # First row has no prior packet, so it contributes nothing.
+    seq_diff = df['seq'].diff()
+    lost     = (seq_diff - 1).fillna(0)
+    expected = seq_diff.fillna(0)
+
+    # Assign each interval to the time bin of its later packet
+    bin_idx = np.floor(df['t_s'] / bin_seconds).astype(int)
+
+    per_bin = pd.DataFrame({'bin': bin_idx, 'lost': lost, 'expected': expected})
+    agg = per_bin.groupby('bin').sum()
+
+    # Reindex to cover every bin in the recording, so silent stretches
+    # (link fully down, nothing received) appear as NaN rather than vanish
+    all_bins = np.arange(0, bin_idx.max() + 1)
+    agg = agg.reindex(all_bins, fill_value=0)
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        loss_pct = np.where(agg['expected'] > 0,
+                            agg['lost'] / agg['expected'] * 100.0,
+                            np.nan)
+
+    return pd.DataFrame({
+        'bin_time_s': agg.index.values * bin_seconds,
+        'loss_pct':   loss_pct,
+        'lost_count': agg['lost'].astype(int).values,
+    })

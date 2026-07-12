@@ -16,15 +16,51 @@ void setup() {
   Serial.begin(115200);
   delay(500);
 
+  WiFi.mode(WIFI_STA);
+  delay(100);
+  WiFi.disconnect(true);
+  delay(100);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to Wi-Fi");
+  
+  Serial.print("Connecting to: ");
+  Serial.println(WIFI_SSID);
+
+  // Diagnostic connect loop: prints the raw status number every 500 ms.
+  // After 20 tries (~10 s) it gives up and scans for visible networks so
+  // we can see whether the hotspot is even broadcasting something the
+  // ESP32 can see (2.4 GHz only, awake, in range).
+  int attempts = 0;
   while (WiFi.status() != WL_CONNECTED) {
-    delay(300);
-    Serial.print(".");
+    delay(500);
+    Serial.print("Status: ");
+    Serial.println(WiFi.status());
+    attempts++;
+    if (attempts > 20) {
+      Serial.println("Giving up. Scanning for visible networks:");
+      int n = WiFi.scanNetworks();
+      for (int i = 0; i < n; i++) {
+        Serial.print("  ");
+        Serial.print(WiFi.SSID(i));
+        Serial.print("  RSSI: ");
+        Serial.println(WiFi.RSSI(i));
+      }
+      break;
+    }
   }
-  Serial.println();
-  Serial.print("Connected. ESP32 IP: ");
-  Serial.println(WiFi.localIP());
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Connected. ESP32 IP: ");
+    Serial.println(WiFi.localIP());
+
+    // Disable modem sleep. The Arduino-ESP32 core enables it by default,
+    // which creates a sawtooth current draw that can trip power bank
+    // auto-shutoff and adds UDP timing jitter at 100 Hz. This flattens
+    // draw to a steady ~170 mA. Do not add other sleep modes before field day.
+    WiFi.setSleep(false);
+    Serial.println("Modem sleep disabled");
+  } else {
+    Serial.println("Wi-Fi failed. Check the scan list above.");
+  }
 
   if (!dso32.begin_I2C()) {
     Serial.println("IMU not found!");

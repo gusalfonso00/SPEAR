@@ -12,6 +12,9 @@ __pycache__/
 # Sensor data logs
 Python/Data Logs/
 
+# Generated link-test plots
+Python/Link Plots/
+
 # Wi-Fi credentials - copy secrets.h.example to secrets.h and fill in values
 Arduino/spear_imu_udp/secrets.h
 
