@@ -57,7 +57,10 @@ void setup() {
     // auto-shutoff and adds UDP timing jitter at 100 Hz. This flattens
     // draw to a steady ~170 mA. Do not add other sleep modes before field day.
     WiFi.setSleep(false);
+
     Serial.println("Modem sleep disabled");
+    Serial.printf("Free heap after WiFi: %u bytes\n", ESP.getFreeHeap());
+    Serial.printf("Largest free block: %u bytes\n", ESP.getMaxAllocHeap());
   } else {
     Serial.println("Wi-Fi failed. Check the scan list above.");
   }

@@ -16,7 +16,7 @@ Python/Data Logs/
 Python/Link Plots/
 
 # Wi-Fi credentials - copy secrets.h.example to secrets.h and fill in values
-Arduino/spear_imu_udp/secrets.h
+**/secrets.h
 
 # Claude Code project instructions (local tooling context, not part of the public repo)
 CLAUDE.md

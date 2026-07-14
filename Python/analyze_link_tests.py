@@ -27,9 +27,9 @@ import spear_analysis as sa
 # label. One entry per test condition. Replace the placeholder filenames
 # with your actual capture files.
 LINK_TESTS = {
-    "imu_log_100m.csv":        "LOS 100m+",
-    "imu_log_bodythencar.csv": "Behind car ~40m",
-    "imu_log_parrallel.csv":   "Parallel 30m",
+    "imu_log_cwtest.csv":        "Rotating tip north ~40m",
+    "imu_log_updowncwtest.csv": "Rotating tip down ~40m",
+    "imu_log_walking40m.csv":   "walking tip away from GS ~40m",
 }
 
 BIN_SECONDS   = 1.0   # time-series bin width
