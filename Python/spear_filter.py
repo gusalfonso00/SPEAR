@@ -193,7 +193,8 @@ def gravity_remove(accel, attitude, local_g):
 # ---------------------------------------------------------------------------
 
 def complementary_filter(accel, gyro, dt, local_g=9.7966,
-                         alpha=0.98, accel_gate=(0.7, 1.3)):
+                         alpha=0.98, accel_gate=(0.7, 1.3),
+                         q0=None, dt_array=None):
     """Complementary filter: attitude tracking from 6-axis IMU.
 
     At each step:
@@ -209,10 +210,23 @@ def complementary_filter(accel, gyro, dt, local_g=9.7966,
     ----------
     accel      : Nx3 float array, m/s^2, body frame, bias-corrected
     gyro       : Nx3 float array, dps, body frame, bias-corrected
-    dt         : float, sample period in seconds
+    dt         : float, nominal sample period in seconds (used when
+                 dt_array is None)
     local_g    : float, local gravitational acceleration in m/s^2
     alpha      : float, gyro trust weight per sample [0, 1]
     accel_gate : tuple (lo, hi), gate bounds as multiples of local_g
+    q0         : optional [w,x,y,z] initial attitude quaternion. When given,
+                 it is used directly and the default first-100-sample
+                 initialization is skipped. Use this to initialize from a
+                 detected quiet window instead of blindly trusting the first
+                 second of the log. Works at ANY tilt; yaw is relative, not
+                 absolute (no magnetometer).
+    dt_array   : optional length-N float array of per-sample timestep in
+                 seconds, where dt_array[i] = t[i] - t[i-1] (element 0 is
+                 unused). Use with UDP logs: a dropped packet makes the gap
+                 between received samples 20-30 ms, and integrating it as a
+                 fixed 10 ms under-rotates the attitude. The quaternion math
+                 is unchanged; only the timestep fed to it varies.
 
     Returns
     -------
@@ -232,15 +246,21 @@ def complementary_filter(accel, gyro, dt, local_g=9.7966,
     gate_lo = accel_gate[0] * local_g
     gate_hi = accel_gate[1] * local_g
 
-    # --- Initialize attitude from first 100 samples (assumes stationary) ---
-    init_n     = min(100, N)
-    accel_init = accel[:init_n].mean(axis=0)    # average accel during startup window
-    init_mag   = np.linalg.norm(accel_init)
-    if not (gate_lo <= init_mag <= gate_hi):
-        print(f"WARNING: Init accel magnitude {init_mag:.3f} m/s2 is outside gate "
-              f"[{gate_lo:.2f}, {gate_hi:.2f}]. Was sensor stationary at start?")
+    if q0 is not None:
+        # Caller-supplied initial attitude, e.g. from a detected quiet window.
+        # No flatness assumption anywhere: quat_from_accel and this path both
+        # handle arbitrary tilt.
+        q = quat_normalize(np.asarray(q0, dtype=float))
+    else:
+        # --- Initialize attitude from first 100 samples (assumes stationary) ---
+        init_n     = min(100, N)
+        accel_init = accel[:init_n].mean(axis=0)    # average accel during startup window
+        init_mag   = np.linalg.norm(accel_init)
+        if not (gate_lo <= init_mag <= gate_hi):
+            print(f"WARNING: Init accel magnitude {init_mag:.3f} m/s2 is outside gate "
+                  f"[{gate_lo:.2f}, {gate_hi:.2f}]. Was sensor stationary at start?")
+        q = quat_from_accel(accel_init)    # initial attitude from gravity direction
 
-    q          = quat_from_accel(accel_init)    # initial attitude from gravity direction
     attitude[0] = q
 
     # --- Main filter loop ---
@@ -251,10 +271,14 @@ def complementary_filter(accel, gyro, dt, local_g=9.7966,
         omega      = gyro_rad[i]
         omega_quat = np.array([0.0, omega[0], omega[1], omega[2]])
 
+        # Per-sample timestep when provided (UDP drops stretch the gap
+        # between received samples); nominal dt otherwise
+        dt_i = dt_array[i] if dt_array is not None else dt
+
         # Quaternion kinematic equation: q_dot = 0.5 * q * omega_quat
         # Integrating gives the new attitude after rotating by omega*dt
         q_dot  = 0.5 * quat_multiply(q, omega_quat)
-        q_pred = quat_normalize(q + q_dot * dt)   # Euler step + renormalize
+        q_pred = quat_normalize(q + q_dot * dt_i)   # Euler step + renormalize
 
         # Step 2: Accel correction (only when |accel| is plausibly just gravity)
         accel_mag = np.linalg.norm(accel[i])
