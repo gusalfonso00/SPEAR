@@ -40,7 +40,10 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(script_dir, 'Data Logs')
     if args.logfile is None:
-        candidates = sa.glob.glob(os.path.join(data_dir, 'imu_log_*.csv'))
+        candidates = []
+        for pattern in ('imu_log_*.csv', 'session_*.csv',
+                        os.path.join('throws', 'throw_*.csv')):
+            candidates += sa.glob.glob(os.path.join(data_dir, pattern))
         if not candidates:
             raise FileNotFoundError(f"No CSV files found in {data_dir}")
         log_path = max(candidates, key=os.path.getmtime)

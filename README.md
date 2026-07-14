@@ -50,7 +50,7 @@ Arduino/spear_imu_udp/
     secrets.h.example       Wi-Fi credential template (copy to secrets.h, never commit)
 
 Python/
-    log_imu_udp.py          UDP listener, writes timestamped CSV logs
+    log_imu.py              Ground station: live UDP logging + flash dump control
     imu_plot.py             Quick 3-panel raw data plot
     characterize_bias.py    Bias/noise characterization, writes imu_calibration.json
     spear_analysis.py       Analysis library (load, calibrate, integrate, plot)
@@ -79,11 +79,11 @@ pip install pandas numpy matplotlib scipy
 **Workflow**
 ```bash
 # Characterize bias from a stationary session
-python log_imu_udp.py                              # 120 s default capture
+python log_imu.py
 python characterize_bias.py --gravity-axis +z      # adjust axis to match mounting
 
 # Capture and analyze a throw
-python log_imu_udp.py
+python log_imu.py
 python analyze_throw.py          # Step 1: raw integration
 python analyze_throw_step2.py    # Step 2: attitude tracking and gravity removal
 ```

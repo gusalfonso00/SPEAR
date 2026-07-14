@@ -30,12 +30,14 @@ look for, what can go wrong.
 
 ## Per-throw protocol
 
-One throw per log. Every throw:
+One ground-station session covers the whole outing; each throw becomes its
+own flash file. The full operator guide is the docstring at the top of
+`log_imu.py`; protocol details are in `Documentation/BUFFER_DUMP.md`.
 
-1. Start the logger:
+1. Start the ground station once:
 
 ```bash
-python log_imu_udp.py
+python log_imu.py
 ```
 
 2. Thrower holds the javelin roughly still for 1-2 seconds. Any orientation
@@ -43,8 +45,15 @@ python log_imu_udp.py
    than that: the summary flags gaps over 3 s because bias leaks into the
    velocity integral over the wait.
 3. Throw from standing, no run-up.
-4. Let the javelin land and settle. Stop the logger (Ctrl+C).
-5. Tape-measure the distance and write it down with the log timestamp.
+4. Press F within 60 seconds of the throw. This freezes the onboard buffer
+   to ESP32 flash; the live UDP log is only a health monitor and its drops
+   do not matter. THE 60 SECOND RULE IS HARD: after that the throw scrolls
+   out of the onboard buffer.
+5. Tape-measure the distance and write it down with the throw file number
+   from the freeze ack (e.g. throw_007.bin).
+6. After the last throw, carry the javelin back near the laptop and press
+   D to download and verify every throw file. Press C to clear the ESP32
+   flash only after every file printed PASS.
 
 ## First throw of the day: tune the flight threshold
 
@@ -99,7 +108,7 @@ python analyze_field_throw.py imu_log_YYYYMMDD_HHMMSS.csv --diagnostic
 | IMPACT accel clipping | Ground strike railed the sensor | Expected, informational only |
 | Large difference, measured vs predicted flight time | Aero effects (the prediction is a vacuum model) | Normal for a javelin; note the gap, it is data |
 
-Packet loss checks still apply in the field: `log_imu_udp.py` prints the
+Packet loss checks still apply in the field: `log_imu.py` prints the
 drop rate live. If loss goes above a few percent, move the laptop closer or
 re-orient it (see the link characterization results: line of sight was 0.2%
 loss at 100 m, a body/car obstruction pushed it to ~9%).

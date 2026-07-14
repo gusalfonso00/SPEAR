@@ -1,10 +1,18 @@
 // LSM6DSO32 over Wi-Fi UDP
 // Same CSV format as serial version
+//
+// Two data paths run side by side:
+//   1. Live UDP stream to the ground station (unchanged, port 4210):
+//      health monitor, lossy by nature.
+//   2. Onboard 60 s RAM ring buffer (throw_buffer tabs): the data of
+//      record. FREEZE writes it to flash; TCP dump retrieves it later.
+//      See Documentation/BUFFER_DUMP.md.
 
 #include <WiFi.h>
 #include <WiFiUdp.h>
 #include <Adafruit_LSM6DSO32.h>
 #include "secrets.h"  // defines WIFI_SSID, WIFI_PASSWORD, TARGET_IP (gitignored)
+#include "throw_buffer.h"
 
 const uint16_t TARGET_PORT = 4210;
 
@@ -15,6 +23,10 @@ uint32_t seq = 0;
 void setup() {
   Serial.begin(115200);
   delay(500);
+
+  // Ring buffer first, before Wi-Fi touches the heap: 108 KB out of a
+  // clean unfragmented heap is deterministic; after Wi-Fi it might not be.
+  throwBufferAlloc();
 
   WiFi.mode(WIFI_STA);
   delay(100);
@@ -80,10 +92,18 @@ void setup() {
   dso32.setAccelDataRate(LSM6DS_RATE_208_HZ);
   dso32.setGyroDataRate(LSM6DS_RATE_208_HZ);
 
+  // Ring buffer, LittleFS, command port, dump server. After Wi-Fi so the
+  // heap print above reflects what the radio stack actually left us.
+  throwBufferInit();
+
   Serial.println("IMU ready, streaming at 100 Hz (ODR 208 Hz)...");
 }
 
 void loop() {
+  // Service FREEZE / dump commands every pass, including the passes where
+  // the 100 Hz scheduler below decides it is not time to sample yet.
+  throwBufferService();
+
   static uint32_t next_us = 0;
   uint32_t now_us = micros();
 
@@ -94,11 +114,29 @@ void loop() {
   sensors_event_t accel, gyro, temp;
   dso32.getEvent(&accel, &gyro, &temp);
 
+  // One counter and one timestamp feed both data paths, so a flash dump
+  // and the live stream can be cross-referenced sample for sample.
+  uint32_t s = seq++;
+  uint32_t now_ms = millis();
+
+  // Ring buffer copy: the raw int16 words getEvent() just read. A struct
+  // copy only; the flash never gets touched from this loop.
+  BufSample smp;
+  smp.t_ms = now_ms;
+  smp.seq  = (uint16_t)s;   // low 16 bits; host decoder unwraps
+  smp.ax = dso32.rawAccX;
+  smp.ay = dso32.rawAccY;
+  smp.az = dso32.rawAccZ;
+  smp.gx = dso32.rawGyroX;
+  smp.gy = dso32.rawGyroY;
+  smp.gz = dso32.rawGyroZ;
+  throwBufferWrite(smp);
+
   char buf[180];
   snprintf(buf, sizeof(buf),
            "%lu,%lu,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f",
-           seq++,
-           millis(),
+           s,
+           now_ms,
            temp.temperature,
            accel.acceleration.x, accel.acceleration.y, accel.acceleration.z,
            gyro.gyro.x, gyro.gyro.y, gyro.gyro.z);

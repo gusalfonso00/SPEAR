@@ -114,7 +114,13 @@ def load_log(filename=None):
     data_dir = os.path.join(script_dir, "Data Logs")
 
     if filename is None:
-        csv_files = glob.glob(os.path.join(data_dir, "imu_log_*.csv"))
+        # Three capture sources share the CSV format: legacy imu_log_*
+        # captures, live session_* logs from log_imu.py, and decoded flash
+        # dumps in throws/. "Most recent" searches all of them.
+        csv_files = []
+        for pattern in ("imu_log_*.csv", "session_*.csv",
+                        os.path.join("throws", "throw_*.csv")):
+            csv_files += glob.glob(os.path.join(data_dir, pattern))
         if not csv_files:
             raise FileNotFoundError(f"No CSV files found in {data_dir}")
         filename = max(csv_files, key=os.path.getmtime)
@@ -124,7 +130,7 @@ def load_log(filename=None):
             filename = os.path.join(data_dir, filename)
         print(f"Loading: {os.path.basename(filename)}")
 
-    # log_imu_udp.py writes a header row, but headerless captures exist too.
+    # log_imu.py writes a header row, but headerless captures exist too.
     # Sniff the first line: if it starts with 'seq' it's a header, otherwise
     # assume the standard 9-column order and assign names ourselves.
     columns = ['seq', 'ms', 'temp_C', 'ax', 'ay', 'az', 'gx', 'gy', 'gz']

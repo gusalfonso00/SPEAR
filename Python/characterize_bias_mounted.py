@@ -9,7 +9,7 @@ every pose on a sphere of radius local_g.
 
 HOW TO CAPTURE THE CALIBRATION LOG (one continuous recording):
 
-  1. Start the logger:  python log_imu_udp.py
+  1. Start the logger:  python log_imu.py
   2. Prop the javelin still in one orientation. Hands off. Hold ~10 s.
   3. Move it to a NEW orientation, prop it, hands off, ~10 s again.
   4. Repeat for 8-10 orientations total, then stop the logger (Ctrl+C).
@@ -151,8 +151,10 @@ def main():
 
     # --- Load log (most recent when unspecified, same rule as the pipeline) ---
     if args.logfile is None:
-        candidates = glob.glob(os.path.join(script_dir, 'Data Logs',
-                                            'imu_log_*.csv'))
+        candidates = []
+        for pattern in ('imu_log_*.csv', 'session_*.csv'):
+            candidates += glob.glob(os.path.join(script_dir, 'Data Logs',
+                                                 pattern))
         if not candidates:
             raise FileNotFoundError('No CSV files found in Data Logs')
         log_path = max(candidates, key=os.path.getmtime)

@@ -77,7 +77,8 @@ def main():
     # --- Find and load most recent log ---
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir   = os.path.join(script_dir, "Data Logs")
-    csv_files  = glob.glob(os.path.join(data_dir, "imu_log_*.csv"))
+    csv_files  = (glob.glob(os.path.join(data_dir, "imu_log_*.csv")) +
+                  glob.glob(os.path.join(data_dir, "session_*.csv")))
     if not csv_files:
         raise FileNotFoundError(f"No CSV files found in {data_dir}")
     latest     = max(csv_files, key=os.path.getmtime)
