@@ -65,8 +65,18 @@ never seen a javelin fly.
 python analyze_field_throw.py --diagnostic
 ```
 
-This analyzes the most recent log, prints the summary, shows the diagnostic
-plot, and saves the plot as a PNG next to the log file.
+This analyzes the most recent log, prints the summary, and opens the
+diagnostic plot. The plot PNG is saved next to the analyzed log on EVERY
+run (with or without --diagnostic); the flag only controls whether the
+window opens. Flash-dump throws are selected by short name:
+
+```bash
+python analyze_field_throw.py throw_003
+python analyze_field_throw.py --list
+```
+
+--list shows every analyzable log (session CSVs and decoded throws),
+newest first.
 
 **If FLIGHT was detected:** the summary prints a line like
 

@@ -453,6 +453,10 @@ class ThrowPhases:
     v0_fallback: bool            # True when no onset found (bench log)
     flight_start: int            # FLIGHT entry index, or None
     flight_confirm: int          # index where FLIGHT reached min duration
+    flight_end: int              # last FLIGHT sample: impact when found,
+                                 # else the end of the low-variance run (so
+                                 # post-flight handling in a no-impact log
+                                 # cannot pollute FLIGHT statistics)
     impact_idx: int              # first impact sample, or None
     needs_review: bool
     review_reasons: list
@@ -547,6 +551,7 @@ def detect_phases(df, params):
     # --- FLIGHT: sustained low variance, searched only after onset ---
     flight_start = None
     flight_confirm = None
+    flight_run_end = None
     if onset_idx is not None:
         low = rolling_var < params.flight_var_thresh   # NaN -> False
         low[:onset_idx + 1] = False
@@ -556,6 +561,7 @@ def detect_phases(df, params):
                 # Confirmation sample: where the run has lasted min_dur
                 flight_confirm = i0 + int(np.searchsorted(
                     t[i0:i1 + 1], t[i0] + params.flight_min_dur))
+                flight_run_end = i1
                 break
 
     # --- IMPACT: armed only once FLIGHT is confirmed ---
@@ -570,11 +576,19 @@ def detect_phases(df, params):
         impact_idx = int(hits[0]) if len(hits) else None
         if impact_idx is None:
             review_reasons.append("FLIGHT found but no impact detected; "
-                                  "flight measured to end of log")
+                                  "flight span ends where the low-variance "
+                                  "run ends")
 
-    # --- Flight duration sanity check ---
+    # Flight end: impact when found; otherwise the end of the low-variance
+    # run, NOT the end of the log. A no-impact log (soft landing, aborted
+    # throw) would otherwise absorb all post-flight handling into FLIGHT
+    # and corrupt the variance statistics the threshold tuning relies on.
+    flight_end = None
     if flight_start is not None:
-        flight_end = impact_idx if impact_idx is not None else len(t) - 1
+        flight_end = impact_idx if impact_idx is not None else flight_run_end
+
+    # --- Flight duration sanity check (detector span) ---
+    if flight_start is not None:
         flight_dur = t[flight_end] - t[flight_start]
         if not (params.flight_sane_min <= flight_dur <= params.flight_sane_max):
             print("=" * 60)
@@ -593,7 +607,7 @@ def detect_phases(df, params):
     for i0, i1 in quiet_windows:
         phase_labels[i0:i1 + 1] = 'QUIET'
     if flight_start is not None:
-        end = impact_idx if impact_idx is not None else len(t)
+        end = impact_idx if impact_idx is not None else flight_end + 1
         phase_labels[flight_start:end] = 'FLIGHT'
     if impact_idx is not None:
         phase_labels[impact_idx:] = 'IMPACT'
@@ -613,7 +627,7 @@ def detect_phases(df, params):
         quiet_windows=quiet_windows, onset_idx=onset_idx,
         v0_idx=v0_idx, v0_fallback=v0_fallback,
         flight_start=flight_start, flight_confirm=flight_confirm,
-        impact_idx=impact_idx,
+        flight_end=flight_end, impact_idx=impact_idx,
         needs_review=bool(review_reasons), review_reasons=review_reasons,
         stuck_state=stuck_state, accel_mag=accel_mag,
         rolling_var=rolling_var, phase_labels=phase_labels)
@@ -925,9 +939,13 @@ def print_field_summary(res):
         print("  onset:          not found (bench log?)")
     if ph.flight_start is not None:
         fs = t[ph.flight_start]
-        fe = t[ph.impact_idx] if ph.impact_idx is not None else t[-1]
+        fe = t[ph.flight_end]
+        # Detector span, not physical flight time: entry lags true release
+        # by the variance window (~0.3 s) plus any settle time. The
+        # ballistic section reports flight time from RELEASE.
         print(f"  FLIGHT:         {fs:7.2f} - {fe:.2f} s  "
-              f"(measured {fe-fs:.2f} s)")
+              f"(detector span {fe-fs:.2f} s"
+              + (", no impact" if ph.impact_idx is None else "") + ")")
     else:
         print("  FLIGHT:         not detected")
     if ph.impact_idx is not None:
@@ -984,13 +1002,17 @@ def print_field_summary(res):
             print("  CAVEAT: inputs are lower bounds (release-window "
                   "clipping); prediction inherits that.")
         print(f"  predicted flight time:  {b['t_flight_s']:.2f} s")
-        if ph.flight_start is not None and ph.impact_idx is not None:
-            meas = t[ph.impact_idx] - t[ph.flight_start]
+        # Measured from RELEASE to impact: the javelin is flying from the
+        # moment speed peaks. FLIGHT entry is only when the detector
+        # confirms it, ~0.3 s late by construction.
+        if res.release is not None and ph.impact_idx is not None:
+            meas = t[ph.impact_idx] - res.release['t_s']
             print(f"  measured  flight time:  {meas:.2f} s  "
-                  f"(difference {b['t_flight_s']-meas:+.2f} s)")
+                  f"(release to impact, difference "
+                  f"{b['t_flight_s']-meas:+.2f} s)")
         else:
             print("  measured  flight time:  unavailable "
-                  "(flight/impact not both detected)")
+                  "(release/impact not both found)")
         print(f"  predicted range:        {b['range_m']:.1f} m  "
               "(compare against tape measure)")
 
@@ -1006,9 +1028,21 @@ def print_field_summary(res):
         if 'ACTIVE' in res.var_stats:
             ratio = res.var_stats['ACTIVE']['median'] / fmed
             print(f"  ACTIVE/FLIGHT median ratio: {ratio:.0f}x")
-        print(f"  SUGGESTED flight_var_thresh = {4.0*fmed:.4g}  "
-              f"(4x FLIGHT median, source: {res.log_name})")
-        print("  Copy that value into SpearParams.flight_var_thresh and re-run.")
+        # The suggestion is only trustworthy when the FLIGHT phase was real
+        # flight. No impact or a needs-review flag means it may be anything
+        # smooth (a held javelin, a resting one), and tuning to that risks
+        # a threshold below true flight variance, which silently disables
+        # flight detection on real throws.
+        if ph.impact_idx is not None and not ph.needs_review:
+            print(f"  SUGGESTED flight_var_thresh = {4.0*fmed:.4g}  "
+                  f"(4x FLIGHT median, source: {res.log_name})")
+            print("  Copy that value into SpearParams.flight_var_thresh "
+                  "and re-run.")
+        else:
+            print(f"  (4x FLIGHT median would be {4.0*fmed:.4g}, but this "
+                  "log is not a confirmed throw - no impact or marked "
+                  "needs-review. DO NOT tune flight_var_thresh from it; "
+                  "use a real throw that ends in a detected impact.)")
     elif ph.onset_idx is not None:
         # No flight found: print post-onset percentiles so the plateau can
         # be read off manually
@@ -1116,6 +1150,11 @@ def plot_field_diagnostic(res, save_path, show=True):
         if ph.impact_idx is not None:
             ax.axvline(t[ph.impact_idx], color='red', linewidth=1.2,
                        label='IMPACT')
+        elif ph.flight_end is not None:
+            # No impact: show where the low-variance run (and therefore the
+            # FLIGHT span) actually ends, so the phase extent is readable
+            ax.axvline(t[ph.flight_end], color='blue', linewidth=1.0,
+                       linestyle=':', label='FLIGHT end (no impact)')
 
     # When detection failed, say so ON the figure: this plot exists to debug
     # exactly that case in the field

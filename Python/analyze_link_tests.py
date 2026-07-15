@@ -27,8 +27,9 @@ import spear_analysis as sa
 # label. One entry per test condition. Replace the placeholder filenames
 # with your actual capture files.
 LINK_TESTS = {
-    "imu_log_cwtest.csv":        "Rotating tip north ~40m",
-    "imu_log_updowncwtest.csv": "Rotating tip down ~40m",
+    "imu_log_cwtest.csv":        "Rotating: tip north ~40m",
+    "imu_log_updowncwtest.csv": "Rotating: tip down ~40m",
+    "imu_log_realisticorientation.csv":   "Rotating: Throw position ~2m ",
     "imu_log_walking40m.csv":   "walking tip away from GS ~40m",
 }
 

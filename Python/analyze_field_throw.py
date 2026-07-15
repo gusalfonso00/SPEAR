@@ -9,48 +9,101 @@ impact), release speed and elevation angle, vacuum ballistic
 self-consistency check, clipping audit, and attitude truth metric.
 
 Usage:
-    python analyze_field_throw.py [logfile.csv] [--diagnostic]
+    python analyze_field_throw.py [logfile] [--diagnostic] [--list]
 
-With no logfile the most recent capture in Data Logs is used.
---diagnostic renders the variance tuning plot (|accel| plus log-scale
-rolling variance with phase overlays), saves it as a PNG next to the log,
-and shows it. Use it on the first real throw of field day to tune
+Selecting a log:
+    (nothing)           most recent capture: session logs and decoded
+                        flash dumps both count
+    throw_001           a flash dump by short name (.csv optional; found
+                        in Data Logs/throws/ automatically)
+    session_...csv      a live-stream session log by name
+    --list              show every analyzable log, newest first, and exit
+
+The variance diagnostic PNG is ALWAYS saved next to the analyzed log
+(<logname>_diagnostic.png). --diagnostic additionally opens it in an
+interactive window. Use that on the first real throw of field day to tune
 SpearParams.flight_var_thresh (the summary prints a suggested value).
 
 All analysis logic lives in spear_analysis.py; this script only wires it up.
 """
 
 import argparse
+import datetime
+import glob
 import os
 
 import spear_analysis as sa
+
+# Every place an analyzable CSV can live, relative to Data Logs
+LOG_PATTERNS = ('imu_log_*.csv', 'session_*.csv',
+                os.path.join('throws', 'throw_*.csv'))
+
+
+def all_logs(data_dir):
+    """Every analyzable CSV, newest first."""
+    found = []
+    for pattern in LOG_PATTERNS:
+        found += glob.glob(os.path.join(data_dir, pattern))
+    return sorted(found, key=os.path.getmtime, reverse=True)
+
+
+def resolve_log(arg, data_dir):
+    """Turn whatever the operator typed into a real path.
+
+    Accepts an absolute path, a filename in Data Logs, a filename in
+    Data Logs/throws, and the .csv extension is optional, so all of these
+    work: throw_001, throw_001.csv, session_2026-07-14_20-32-22.csv.
+    """
+    if os.path.isabs(arg):
+        return arg
+    names = [arg] if arg.endswith('.csv') else [arg, arg + '.csv']
+    for name in names:
+        for base in (data_dir, os.path.join(data_dir, 'throws')):
+            p = os.path.join(base, name)
+            if os.path.exists(p):
+                return p
+    available = [os.path.relpath(p, data_dir) for p in all_logs(data_dir)[:8]]
+    raise FileNotFoundError(
+        f"'{arg}' not found in Data Logs or Data Logs/throws. "
+        f"Most recent logs: {', '.join(available) if available else '(none)'}. "
+        f"Run with --list to see everything.")
 
 
 def main():
     parser = argparse.ArgumentParser(
         description='Analyze a javelin throw log (phases, release, audits).')
     parser.add_argument('logfile', nargs='?', default=None,
-                        help='CSV in Data Logs (default: most recent)')
+                        help='Log to analyze: throw_001, session_*.csv, or a '
+                             'path (default: most recent)')
     parser.add_argument('--diagnostic', action='store_true',
-                        help='Render and save the variance tuning plot')
+                        help='Open the variance tuning plot interactively '
+                             '(the PNG is saved either way)')
+    parser.add_argument('--list', action='store_true',
+                        help='List analyzable logs, newest first, and exit')
     args = parser.parse_args()
 
-    # Resolve the log path up front (same rule as load_log: most recent when
-    # unspecified) so the diagnostic PNG can be named after the actual file
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(script_dir, 'Data Logs')
+
+    if args.list:
+        logs = all_logs(data_dir)
+        if not logs:
+            print("No logs found in Data Logs.")
+            return
+        print(f"{'log':<42} {'modified':<17} {'size':>8}")
+        for p in logs:
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+            print(f"{os.path.relpath(p, data_dir):<42} "
+                  f"{mtime:%Y-%m-%d %H:%M}  {os.path.getsize(p):>8}")
+        return
+
     if args.logfile is None:
-        candidates = []
-        for pattern in ('imu_log_*.csv', 'session_*.csv',
-                        os.path.join('throws', 'throw_*.csv')):
-            candidates += sa.glob.glob(os.path.join(data_dir, pattern))
-        if not candidates:
+        logs = all_logs(data_dir)
+        if not logs:
             raise FileNotFoundError(f"No CSV files found in {data_dir}")
-        log_path = max(candidates, key=os.path.getmtime)
-    elif os.path.isabs(args.logfile):
-        log_path = args.logfile
+        log_path = logs[0]
     else:
-        log_path = os.path.join(data_dir, args.logfile)
+        log_path = resolve_log(args.logfile, data_dir)
 
     # --- Load and bias-correct, same calibration priority as Step 1/2 ---
     df = sa.load_log(log_path)
@@ -75,12 +128,13 @@ def main():
                                log_name=os.path.basename(log_path))
     sa.print_field_summary(res)
 
-    if args.diagnostic:
-        # PNG lands next to the log file so field notes and plots stay together
-        base = os.path.splitext(os.path.basename(log_path))[0]
-        png_path = os.path.join(os.path.dirname(log_path),
-                                f"{base}_diagnostic.png")
-        sa.plot_field_diagnostic(res, png_path, show=True)
+    # The diagnostic PNG is always saved next to the log so every analyzed
+    # capture has its plot on disk; --diagnostic additionally opens it in an
+    # interactive window for threshold tuning in the field.
+    base = os.path.splitext(os.path.basename(log_path))[0]
+    png_path = os.path.join(os.path.dirname(log_path),
+                            f"{base}_diagnostic.png")
+    sa.plot_field_diagnostic(res, png_path, show=args.diagnostic)
 
 
 if __name__ == '__main__':

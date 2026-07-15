@@ -1,29 +1,30 @@
 {
-  "source_log": "imu_log_20260507_170157.csv",
-  "characterized_at": "2026-05-07T23:57:20.291715+00:00",
-  "gravity_axis": "+z",
+  "source_log": "mounted_calibration_07_14_2.csv",
+  "characterized_at": "2026-07-15T00:48:05.158008+00:00",
+  "gravity_axis": "none (mounted sphere fit)",
+  "method": "sphere_fit_mounted",
   "local_gravity_mps2_used": 9.7966,
-  "duration_used_s": 53.36,
-  "n_samples_used": 5337,
+  "n_poses": 8,
+  "fit_rms_residual_mps2": 0.072386,
   "accel_bias_mps2": {
-    "x": 0.0655589,
-    "y": 0.1396077,
-    "z": 0.5375637
+    "x": 0.0159428,
+    "y": -0.091416,
+    "z": 0.4533855
   },
   "accel_noise_std_mps2": {
-    "x": 0.0240443,
-    "y": 0.0220675,
-    "z": 0.0208218
+    "x": 0.0331251,
+    "y": 0.0656159,
+    "z": 0.0343227
   },
   "gyro_bias_dps": {
-    "x": -0.8193102,
-    "y": 0.2163123,
-    "z": -0.2028918
+    "x": -1.0310803,
+    "y": 0.2102719,
+    "z": -0.0871189
   },
   "gyro_noise_std_dps": {
-    "x": 0.0366124,
-    "y": 0.032567,
-    "z": 0.0356597
+    "x": 0.5770006,
+    "y": 0.0522879,
+    "z": 0.0591268
   },
-  "notes": "Z-axis bias has gravity (+z, 9.7966 m/s\u00b2) subtracted; stored value is true sensor offset from expected. X/Y bias may be confounded with mounting tilt - re-characterize with a proper fixture for full 3-axis calibration."
+  "notes": "Sphere fit over 8 still poses with the sensor mounted; no gravity-axis assumption. All three accel bias components are true sensor offsets (mounting tilt does not enter). Bias only; scale factor not fitted."
 }
