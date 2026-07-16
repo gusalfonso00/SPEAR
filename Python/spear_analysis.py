@@ -55,30 +55,51 @@ class SpearParams:
     # 3 g is far above handheld motion and far below any real throw pull.
     onset_thresh_g: float = 3.0     # multiples of local_g
 
-    # FLIGHT detection: rolling variance of |accel| below flight_var_thresh
-    # sustained for flight_min_dur. Variance, not magnitude: free flight can
-    # read several g (drag plus centripetal from off-axis mounting) but it is
-    # SMOOTH. flight_var_window is the rolling window length.
-    flight_var_window: float = 0.3  # s
+    # v = 0 point: velocity integration starts at the END of the stillest
+    # v0_still_dur stretch found within v0_lookback_s before onset (chosen
+    # by minimum rolling variance, no absolute tolerance - handheld tremor
+    # fails the strict quiet test but is fine for zeroing velocity).
+    # Only data from right before the throw feeds the velocity integral;
+    # nothing earlier leaks in. THESE are the knobs for where integration
+    # starts: raise v0_lookback_s if your pre-throw hold happens earlier
+    # than 4 s before the pull.
+    v0_lookback_s: float = 4.0      # s before onset to search for the hold
+    v0_still_dur: float = 1.0       # s of stillness to anchor v=0
 
-    # >>> PROVISIONAL AND UNVALIDATED <<<
-    # flight_var_thresh has never seen a real throw. The default below is set
-    # from bench data only: comfortably above stationary and handheld-quiet
-    # variance, far below throw/handling dynamics. It WILL be retuned on field
-    # day. Field procedure (two lines):
-    #   Throw one javelin, run analyze_field_throw.py --diagnostic on its log.
-    #   Copy the SUGGESTED flight_var_thresh from the summary into this field.
-    flight_var_thresh: float = 0.5  # (m/s^2)^2, rolling variance of |accel|
+    # Minimum in-gate samples for the v=0 window attitude check to print a
+    # mean; below this the summary prints n/a with the count instead of a
+    # number averaged over almost nothing.
+    attitude_check_min_samples: int = 10
 
-    flight_min_dur: float = 0.5     # s below threshold to confirm FLIGHT
-    flight_sane_min: float = 1.0    # s; flight shorter than this = needs review
-    flight_sane_max: float = 4.0    # s; flight longer than this = needs review
+    # Trimmed copy: analyze_field_throw.py writes <log>_trimmed.csv next to
+    # the source, holding only the good part of the record. The values used
+    # come from the TRIM WINDOW block at the TOP of analyze_field_throw.py,
+    # which overrides these defaults - edit there.
+    trim_pre_onset_s: float = 5.0   # s kept before onset
+    trim_post_impact_s: float = 2.0 # s kept after impact
 
-    # IMPACT detection (armed only after FLIGHT is confirmed): any raw accel
-    # axis beyond impact_rail_frac of full scale, or a step in |accel| larger
-    # than impact_step_mps2 between consecutive samples.
-    impact_rail_frac: float = 0.90  # fraction of accel full scale
-    impact_step_mps2: float = 50.0  # m/s^2 jump in |accel| sample to sample
+    # FLIGHT detection: peak-based, sized for short field throws (10-30 m,
+    # flight under ~2 s). The impact is the loudest event in the log (all
+    # real throws railed or nearly railed the accel: 322-478 m/s^2), so:
+    #   impact anchor = global max of |accel|
+    #   onset         = first >3g sample within throw_lookback_s before it
+    #   flight start  = the pull peak (max |accel| within release_window_s
+    #                   after onset) - throw_013 example: 56.127 s
+    #   flight end    = rising edge of the impact peak (walk back from the
+    #                   max while |accel| >= impact_rise_frac of the peak)
+    # No variance thresholds to tune. A variance-band detector was tried
+    # first and needed per-session tuning (flight vibration 89-278 vs pull
+    # 343-1760: thin margins). Revisit for long throws where flight
+    # exceeds throw_lookback_s or impact is quieter than the pull.
+    flight_var_window: float = 0.3  # s, rolling variance window (stats and
+                                    # diagnostic plots only, not detection)
+    throw_lookback_s: float = 3.0   # s before the impact peak to search for
+                                    # onset; must exceed max flight time
+    release_window_s: float = 0.5   # s after onset containing the pull peak
+    impact_rise_frac: float = 0.2   # walk-back stops when |accel| falls
+                                    # below this fraction of the impact peak
+    flight_sane_min: float = 0.4    # s; flight shorter = needs review
+    flight_sane_max: float = 4.0    # s; flight longer = needs review
 
     # Clipping audit: a sample counts as near-rail when any axis is within
     # clip_rail_frac of full scale. 0.98 rather than 1.0 because the sensor
@@ -448,8 +469,9 @@ class ThrowPhases:
     """Result of detect_phases: indices are into the log arrays."""
     quiet_windows: list          # [(i_start, i_end)] inclusive, time-ordered
     onset_idx: int               # first |accel| > onset threshold, or None
-    v0_idx: int                  # velocity zero point (end of last quiet
-                                 # window before onset), or 0 on fallback
+    v0_idx: int                  # velocity zero point (end of the stillest
+                                 # pre-throw stretch), or 0 on fallback
+    v0_window: tuple             # (i0, i1) of that stillest stretch, or None
     v0_fallback: bool            # True when no onset found (bench log)
     flight_start: int            # FLIGHT entry index, or None
     flight_confirm: int          # index where FLIGHT reached min duration
@@ -495,12 +517,19 @@ def detect_phases(df, params):
              quiet_gyro_tol, sustained >= quiet_min_dur.
     ACTIVE : end of last quiet window to FLIGHT entry. Nothing armed here;
              throw spikes are ignored.
-    FLIGHT : rolling variance of |accel| < flight_var_thresh sustained
-             >= flight_min_dur, searched only AFTER onset. Variance, not
-             magnitude: flight can read several g but it is smooth.
-    IMPACT : armed only after FLIGHT confirms. Any raw accel axis beyond
-             impact_rail_frac of full scale, or an |accel| step larger than
-             impact_step_mps2. Everything after the first impact is ignored.
+    FLIGHT : peak-based, anchored on the impact. The impact is the loudest
+             event in a short field throw, so: impact anchor = global max
+             of |accel|; onset = first >3g within throw_lookback_s before
+             it (earlier bumps/drops in the 60 s ring are ignored because
+             they are not the loudest event); flight starts at the PULL
+             PEAK (max |accel| within release_window_s of onset); flight
+             ends at the impact peak's rising edge.
+    IMPACT : the rising edge of the global |accel| peak (walk back from the
+             max while |accel| stays above impact_rise_frac of it).
+             Everything after impact is ignored.
+
+    Sized for easy 10-30 m throws. A log with no sample above the onset
+    threshold is a bench log: no onset, no flight, no impact.
     """
     for col in ('ax_corr', 'ay_corr', 'az_corr', 'gx_corr', 'gy_corr', 'gz_corr'):
         if col not in df.columns:
@@ -522,24 +551,64 @@ def detect_phases(df, params):
     quiet_windows = [(i0, i1) for i0, i1 in _runs_of(quiet_mask)
                      if t[i1] - t[i0] >= params.quiet_min_dur]
 
-    # --- Onset: first sample above the throw threshold ---
+    # --- Peak-based throw detection, anchored on the impact ---
+    # The impact is the loudest event in the log for these short throws.
+    # Anchoring everything on the global |accel| max makes earlier >3g
+    # events in the 60 s ring (bumps, drops, the previous throw's echo)
+    # irrelevant without any extra logic: they are not the loudest event.
     onset_thresh = params.onset_thresh_g * params.local_g
     above = np.flatnonzero(accel_mag > onset_thresh)
-    onset_idx = int(above[0]) if len(above) else None
+    onset_idx = None
+    flight_start = None
+    flight_confirm = None
+    flight_run_end = None
 
-    # --- v = 0 point: end of the LAST quiet window before onset ---
+    if len(above):
+        peak_idx = int(np.argmax(accel_mag))
+
+        # Onset: first >3g sample in the lookback window before the peak
+        cand = above[(t[above] >= t[peak_idx] - params.throw_lookback_s) &
+                     (above <= peak_idx)]
+        onset_idx = int(cand[0]) if len(cand) else int(above[0])
+
+        # Flight starts at the pull peak: the first obvious |accel| peak
+        # of the throw (throw_013: 56.127 s)
+        j1 = int(np.searchsorted(t, t[onset_idx] + params.release_window_s))
+        flight_start = onset_idx + int(np.argmax(accel_mag[onset_idx:j1]))
+
+        # Release-search bound: peak integrated speed sits at the end of
+        # the pull, within a fraction of a second of the pull peak
+        flight_confirm = int(np.searchsorted(t, t[flight_start] + 0.2))
+
+        # Flight ends at the impact peak's rising edge: walk back from the
+        # max while |accel| stays above impact_rise_frac of it
+        # (throw_013: peak 478 at 57.64, rising edge 57.62)
+        rise = max(onset_thresh, params.impact_rise_frac * accel_mag[peak_idx])
+        k = peak_idx
+        while k > flight_start + 1 and accel_mag[k - 1] >= rise:
+            k -= 1
+        flight_run_end = k
+
+    # --- v = 0 point: stillest stretch right before the throw ---
+    # Deliberately NOT the strict quiet detector: handheld tremor before a
+    # throw (measured ~0.8 m/s^2, ~23 dps on throw_013) fails the absolute
+    # tolerances, but the stillest second of the pre-throw hold is exactly
+    # where velocity is closest to zero. Anchoring here means only data
+    # from right before the throw feeds the velocity integral.
     v0_fallback = False
+    v0_window = None
     if onset_idx is not None:
-        pre = [w for w in quiet_windows if w[1] <= onset_idx]
-        if not pre:
+        j_lo = int(np.searchsorted(t, t[onset_idx] - params.v0_lookback_s))
+        v0_window = find_stillest_window(rolling_var, t, j_lo, onset_idx,
+                                         params.v0_still_dur)
+        if v0_window is None:
             raise ValueError(
-                f"No quiet window found before throw onset at index {onset_idx} "
-                f"(t={t[onset_idx]:.2f} s). Thresholds used: quiet_accel_tol="
-                f"{params.quiet_accel_tol} m/s^2, quiet_gyro_tol="
-                f"{params.quiet_gyro_tol} dps, quiet_min_dur="
-                f"{params.quiet_min_dur} s. Was the pre-throw hold too short "
-                f"or too shaky? Loosen the quiet tolerances or re-log.")
-        v0_idx = pre[-1][1]
+                f"No {params.v0_still_dur:.1f} s stretch found in the "
+                f"{params.v0_lookback_s:.1f} s before onset "
+                f"(t={t[onset_idx]:.2f} s) - the log starts too close to "
+                f"the throw. Hold still for a second right before throwing, "
+                f"or raise SpearParams.v0_lookback_s.")
+        v0_idx = v0_window[1]
     else:
         # Bench log: no throw. Integrate from sample 0 and say so.
         v0_idx = 0
@@ -548,44 +617,15 @@ def detect_phases(df, params):
               f"{params.onset_thresh_g:.1f} g). Falling back to integrating "
               "from sample 0. Expected for bench logs.")
 
-    # --- FLIGHT: sustained low variance, searched only after onset ---
-    flight_start = None
-    flight_confirm = None
-    flight_run_end = None
-    if onset_idx is not None:
-        low = rolling_var < params.flight_var_thresh   # NaN -> False
-        low[:onset_idx + 1] = False
-        for i0, i1 in _runs_of(low):
-            if t[i1] - t[i0] >= params.flight_min_dur:
-                flight_start = i0
-                # Confirmation sample: where the run has lasted min_dur
-                flight_confirm = i0 + int(np.searchsorted(
-                    t[i0:i1 + 1], t[i0] + params.flight_min_dur))
-                flight_run_end = i1
-                break
-
-    # --- IMPACT: armed only once FLIGHT is confirmed ---
+    # --- IMPACT: the rising edge found by the walk-back above ---
+    # A degenerate span (impact right at the pull peak) means the global
+    # max WAS the pull: no flight happened (fake throw, held-on swing).
+    # The duration sanity check below flags it for review.
     impact_idx = None
-    if flight_confirm is not None:
-        rail = params.impact_rail_frac * params.accel_fs_g * G_STD
-        raw = df[['ax', 'ay', 'az']].values
-        near_rail = (np.abs(raw) >= rail).any(axis=1)
-        step = np.abs(np.diff(accel_mag, prepend=accel_mag[0]))
-        hits = np.flatnonzero((near_rail | (step > params.impact_step_mps2))
-                              & (np.arange(len(t)) > flight_confirm))
-        impact_idx = int(hits[0]) if len(hits) else None
-        if impact_idx is None:
-            review_reasons.append("FLIGHT found but no impact detected; "
-                                  "flight span ends where the low-variance "
-                                  "run ends")
-
-    # Flight end: impact when found; otherwise the end of the low-variance
-    # run, NOT the end of the log. A no-impact log (soft landing, aborted
-    # throw) would otherwise absorb all post-flight handling into FLIGHT
-    # and corrupt the variance statistics the threshold tuning relies on.
     flight_end = None
     if flight_start is not None:
-        flight_end = impact_idx if impact_idx is not None else flight_run_end
+        impact_idx = flight_run_end
+        flight_end = impact_idx
 
     # --- Flight duration sanity check (detector span) ---
     if flight_start is not None:
@@ -625,7 +665,7 @@ def detect_phases(df, params):
 
     return ThrowPhases(
         quiet_windows=quiet_windows, onset_idx=onset_idx,
-        v0_idx=v0_idx, v0_fallback=v0_fallback,
+        v0_idx=v0_idx, v0_window=v0_window, v0_fallback=v0_fallback,
         flight_start=flight_start, flight_confirm=flight_confirm,
         flight_end=flight_end, impact_idx=impact_idx,
         needs_review=bool(review_reasons), review_reasons=review_reasons,
@@ -736,10 +776,13 @@ def clipping_audit(df, phases, params):
                              'accel_clip': int(accel_clip[mask].sum()),
                              'gyro_clip': int(gyro_clip[mask].sum())}
 
-    # Release window: v0 to FLIGHT entry (or impact/end when FLIGHT missing)
+    # Release window: v0 through the release-search bound (flight_confirm,
+    # just past the pull peak). Must INCLUDE the pull peak: that is where
+    # accel is largest and clipping actually happens, and clipping there
+    # corrupts the integrated release speed.
     i0 = phases.v0_idx
-    if phases.flight_start is not None:
-        i1 = phases.flight_start
+    if phases.flight_confirm is not None:
+        i1 = phases.flight_confirm
     elif phases.impact_idx is not None:
         i1 = phases.impact_idx
     else:
@@ -814,8 +857,8 @@ def yaw_excursion_and_drift(t, attitude, quiet_windows):
 def phase_variance_stats(phases):
     """Median and 90th percentile of rolling variance per detected phase.
 
-    The field tuning aid: read the FLIGHT plateau level here and set
-    flight_var_thresh from it (the summary suggests 4x the FLIGHT median).
+    Informational: characterizes each phase's vibration level. Detection is
+    peak-based and does not use these numbers.
     """
     stats = {}
     for ph in ('QUIET', 'ACTIVE', 'FLIGHT', 'IMPACT'):
@@ -827,6 +870,33 @@ def phase_variance_stats(phases):
                          'p90': float(np.percentile(v, 90)),
                          'n': int(len(v))}
     return stats
+
+
+def find_stillest_window(rolling_var, t, i0, i1, dur_s=1.0):
+    """The stillest stretch of duration dur_s inside [i0, i1).
+
+    Relaxed alternative to the strict quiet detector: instead of absolute
+    tolerances (which handheld tremor can fail), take the dur_s window with
+    the lowest mean rolling variance. Useful for eyeballing the pre-throw
+    hold when the strict detector found nothing there.
+
+    Returns (j0, j1) inclusive index pair, or None if the span is shorter
+    than dur_s.
+    """
+    dt_med = float(np.median(np.diff(t)))
+    n = max(2, int(round(dur_s / dt_med)))
+    if i1 - i0 < n:
+        return None
+    # NaN (the rolling-variance warmup at the start of a file) becomes a
+    # LARGE FINITE penalty, not inf: inf poisons the cumulative sum (every
+    # later window mean turns into inf - inf = NaN and argmin returns the
+    # first NaN, silently picking the warmup region as "stillest").
+    v = np.nan_to_num(rolling_var[i0:i1], nan=1e12, posinf=1e12)
+    # Mean variance over every candidate window via cumulative sum
+    c = np.concatenate(([0.0], np.cumsum(v)))
+    means = (c[n:] - c[:-n]) / n
+    j0 = i0 + int(np.argmin(means))
+    return (j0, j0 + n - 1)
 
 
 @dataclass
@@ -911,8 +981,13 @@ def analyze_field_log(df, params, log_name=''):
         q0_source=q0_source)
 
 
-def print_field_summary(res):
-    """Single summary block per log: phases, release, prediction, audits."""
+def print_field_summary(res, measured_distance_m=None):
+    """Single summary block per log: phases, release, prediction, audits.
+
+    measured_distance_m: optional tape-measured throw distance; when given,
+    the ballistic section prints the error of the vacuum prediction against
+    it, in meters and percent.
+    """
     p = res.params
     ph = res.phases
     t = res.t
@@ -940,12 +1015,11 @@ def print_field_summary(res):
     if ph.flight_start is not None:
         fs = t[ph.flight_start]
         fe = t[ph.flight_end]
-        # Detector span, not physical flight time: entry lags true release
-        # by the variance window (~0.3 s) plus any settle time. The
-        # ballistic section reports flight time from RELEASE.
+        # Pull peak to impact rising edge. The ballistic section reports
+        # flight time from RELEASE (peak integrated speed), which sits at
+        # the end of the pull, within a few samples of the pull peak.
         print(f"  FLIGHT:         {fs:7.2f} - {fe:.2f} s  "
-              f"(detector span {fe-fs:.2f} s"
-              + (", no impact" if ph.impact_idx is None else "") + ")")
+              f"(pull peak to impact rise, {fe-fs:.2f} s)")
     else:
         print("  FLIGHT:         not detected")
     if ph.impact_idx is not None:
@@ -961,8 +1035,11 @@ def print_field_summary(res):
     if ph.v0_fallback:
         print("  v=0 point:      sample 0 (FALLBACK: no onset found)")
     else:
-        print(f"  v=0 point:      index {ph.v0_idx}, t={t[ph.v0_idx]:.2f} s "
-              "(end of last quiet window)")
+        vw = ph.v0_window
+        print(f"  v=0 point:      t={t[ph.v0_idx]:.2f} s (end of stillest "
+              f"pre-throw stretch, {t[vw[0]]:.2f}-{t[vw[1]]:.2f} s)")
+        print("                  velocity integrates ONLY from here to "
+              "impact; nothing earlier is used")
     if ph.onset_idx is not None:
         gap = t[ph.onset_idx] - t[ph.v0_idx]
         print(f"  onset:          index {ph.onset_idx}, "
@@ -1013,93 +1090,135 @@ def print_field_summary(res):
         else:
             print("  measured  flight time:  unavailable "
                   "(release/impact not both found)")
-        print(f"  predicted range:        {b['range_m']:.1f} m  "
-              "(compare against tape measure)")
-
-    # --- Variance statistics and threshold suggestion ---
-    print()
-    print(f"Rolling variance of |accel| per phase "
-          f"({p.flight_var_window:.1f} s window, (m/s^2)^2):")
-    for name, s in res.var_stats.items():
-        print(f"  {name:<7} median {s['median']:>12.4g}   "
-              f"p90 {s['p90']:>12.4g}   ({s['n']} samples)")
-    if 'FLIGHT' in res.var_stats:
-        fmed = res.var_stats['FLIGHT']['median']
-        if 'ACTIVE' in res.var_stats:
-            ratio = res.var_stats['ACTIVE']['median'] / fmed
-            print(f"  ACTIVE/FLIGHT median ratio: {ratio:.0f}x")
-        # The suggestion is only trustworthy when the FLIGHT phase was real
-        # flight. No impact or a needs-review flag means it may be anything
-        # smooth (a held javelin, a resting one), and tuning to that risks
-        # a threshold below true flight variance, which silently disables
-        # flight detection on real throws.
-        if ph.impact_idx is not None and not ph.needs_review:
-            print(f"  SUGGESTED flight_var_thresh = {4.0*fmed:.4g}  "
-                  f"(4x FLIGHT median, source: {res.log_name})")
-            print("  Copy that value into SpearParams.flight_var_thresh "
-                  "and re-run.")
+        if measured_distance_m is not None:
+            err_m = b['range_m'] - measured_distance_m
+            err_pct = err_m / measured_distance_m * 100.0
+            print(f"  predicted range:        {b['range_m']:.1f} m")
+            print(f"  measured  range:        {measured_distance_m:.1f} m "
+                  "(tape)")
+            print(f"  range error:            {err_m:+.1f} m ({err_pct:+.0f}%)"
+                  "  (vacuum model; javelin aero makes some error expected)")
         else:
-            print(f"  (4x FLIGHT median would be {4.0*fmed:.4g}, but this "
-                  "log is not a confirmed throw - no impact or marked "
-                  "needs-review. DO NOT tune flight_var_thresh from it; "
-                  "use a real throw that ends in a detected impact.)")
-    elif ph.onset_idx is not None:
-        # No flight found: print post-onset percentiles so the plateau can
-        # be read off manually
-        post = res.phases.rolling_var[ph.onset_idx:]
-        post = post[np.isfinite(post)]
-        if len(post):
-            print("  FLIGHT not found. Post-onset variance percentiles for "
-                  "manual threshold setting:")
-            for q in (10, 25, 50, 75, 90):
-                print(f"    p{q:<3} {np.percentile(post, q):>12.4g}")
+            print(f"  predicted range:        {b['range_m']:.1f} m  "
+                  "(compare against tape measure, or re-run with "
+                  "--distance)")
 
-    # --- Clipping / saturation audit ---
+    # --- Data quality: only the things that change how much to trust the
+    # numbers above. Clipping in the release window makes speed a lower
+    # bound (already formatted above); gyro saturation before release makes
+    # the elevation angle suspect (also tracks spin headroom, an open
+    # question); the attitude check is filter health, which feeds
+    # elevation and therefore the range prediction.
     print()
-    print(f"Clipping audit (rail = {p.clip_rail_frac:.0%} of "
-          f"{p.accel_fs_g:.0f} g / {p.gyro_fs_dps:.0f} dps):")
-    for name, s in res.audit['per_phase'].items():
-        note = ""
-        if name == 'IMPACT' and s['accel_clip'] > 0:
-            note = "  (expected at ground strike, informational)"
-        print(f"  {name:<7} accel {s['accel_clip']:>5} / {s['n']:<6} "
-              f"gyro {s['gyro_clip']:>5} / {s['n']:<6}{note}")
-    if res.audit['gyro_sat_before_release'] > 0:
-        print(f"  NOTE: {res.audit['gyro_sat_before_release']} gyro samples "
-              "saturated before or at release. Attitude and elevation angle "
-              "are suspect for this log.")
+    print("Data quality:")
+    rel_clip = res.audit['release_accel_clip']
+    imp_clip = res.audit['per_phase'].get('IMPACT', {}).get('accel_clip', 0)
+    gyro_sat = res.audit['gyro_sat_before_release']
+    if rel_clip == 0 and gyro_sat == 0:
+        note = f"  (impact railed {imp_clip} samples, expected)" \
+            if imp_clip else ""
+        print(f"  clipping:       none before impact{note}")
+    else:
+        if rel_clip:
+            print(f"  clipping:       {rel_clip} accel samples at rail in "
+                  "the release window (speed above is a LOWER BOUND)")
+        if gyro_sat:
+            print(f"  gyro saturation: {gyro_sat} samples before release "
+                  "(elevation angle suspect; spin near 2000 dps limit)")
 
-    # --- Attitude truth metric ---
-    # Stats stop at impact: post-impact attitude is meaningless (that data is
-    # ignored by the whole pipeline) and tumbling wreckage samples that
-    # happen to fall in-gate would otherwise dominate the max.
-    print()
     end = ph.impact_idx if ph.impact_idx is not None else len(res.truth_angle)
     finite = res.truth_angle[:end]
     finite = finite[np.isfinite(finite)]
     if len(finite):
-        print(f"Attitude truth metric (predicted vs measured gravity "
-              f"direction, in-gate samples, pre-impact):")
-        print(f"  mean {np.mean(finite):.2f} deg   max {np.max(finite):.2f} deg   "
-              f"({len(finite)} samples in gate)")
-    else:
-        print("Attitude truth metric: no in-gate samples before impact")
+        print(f"  attitude check (whole record, convergence-sensitive): "
+              f"{np.mean(finite):.1f} deg mean error, predicted vs "
+              f"measured gravity")
 
-    # --- Yaw: excursion and drift are different things ---
-    print()
-    ys = res.yaw_stats
-    print(f"Yaw (relative heading, unobservable absolute reference):")
-    print(f"  excursion:      {ys['excursion_deg']:.2f} deg total range "
-          "(includes real rotation, NOT drift)")
-    if ys['drift_deg_per_min'] is not None:
-        print(f"  drift:          {ys['drift_deg_per_min']:+.3f} deg/min "
-              f"(fitted across {ys['n_quiet_windows']} quiet windows)")
-    else:
-        print("  drift:          not estimable (no usable quiet window)")
+    # Attitude check over ONLY the v=0 still window. The whole-record mean
+    # above is convergence-contaminated: it averages the filter's early
+    # settling from its initial guess and any pre-throw handling together
+    # with the part that matters, so it moves when the trim window moves
+    # (measured: TRIM_PRE 5 -> 10 shifted it 6.9 -> 4.7 on one throw and
+    # 5.5 -> 6.5 on another while every release number stayed
+    # bit-identical). The v=0 window is the stillest stretch right before
+    # the throw - the attitude the filter carries INTO the pull - so its
+    # error is the one that actually feeds release elevation.
+    if ph.v0_window is not None:
+        j0, j1 = ph.v0_window
+        vwin = res.truth_angle[j0:j1 + 1]
+        vwin = vwin[np.isfinite(vwin)]      # in-gate samples only (NaN = gate open)
+        if len(vwin) >= p.attitude_check_min_samples:
+            print(f"  attitude check (v=0 window):   {np.mean(vwin):.1f} deg "
+                  f"mean error over {len(vwin)} in-gate samples "
+                  f"(healthy < ~5; feeds release elevation)")
+        else:
+            print(f"  attitude check (v=0 window):   n/a "
+                  f"({len(vwin)} in-gate samples, need "
+                  f">= {p.attitude_check_min_samples})")
 
-    print()
-    print(f"Attitude init:    {res.q0_source}")
     print('=' * w)
+
+
+def write_trimmed_copy(raw_df, phases, params, src_path):
+    """Write <log>_trimmed.csv next to the source: only the good part.
+
+    Window: trim_pre_onset_s before onset through trim_post_impact_s after
+    impact (both SpearParams fields; edit trim_pre_onset_s to move the
+    start). RAW columns only, same format as the source, so every loader
+    and analysis script consumes the trimmed copy unchanged.
+
+    Returns the path written, or None when there is no throw to trim to.
+    """
+    if phases.onset_idx is None:
+        return None
+    t = raw_df['t_s'].values
+    i0 = int(np.searchsorted(t, t[phases.onset_idx] - params.trim_pre_onset_s))
+    if phases.impact_idx is not None:
+        i1 = int(np.searchsorted(t, t[phases.impact_idx]
+                                 + params.trim_post_impact_s))
+    else:
+        i1 = len(t)
+
+    cols = [c for c in ('seq', 'ms', 'temp_C', 'ax', 'ay', 'az',
+                        'gx', 'gy', 'gz') if c in raw_df.columns]
+    out_path = os.path.splitext(src_path)[0] + '_trimmed.csv'
+    raw_df.iloc[i0:i1][cols].to_csv(out_path, index=False)
+    return out_path
+
+
+def overlay_phase_markers(ax, res):
+    """Draw the detected phase markers on any time-axis plot.
+
+    The single source of truth for phase overlays: onset (orange), the v=0
+    still window (green span) and anchor (green dotted), FLIGHT entry
+    (blue dashed), IMPACT (red) or FLIGHT end when no impact. Used by the
+    field diagnostic and by presentation figures, so the two can never
+    drift apart. Strict QUIET windows are deliberately NOT shaded: the
+    only green area is the stretch the velocity integral actually uses.
+    """
+    ph = res.phases
+    t = res.t
+    if ph.onset_idx is not None:
+        ax.axvline(t[ph.onset_idx], color='orange', linewidth=1.2,
+                   label='onset')
+    if not ph.v0_fallback:
+        if ph.v0_window is not None:
+            ax.axvspan(t[ph.v0_window[0]], t[ph.v0_window[1]],
+                       alpha=0.25, color='limegreen',
+                       label='v=0 window (integration starts at its end)')
+        ax.axvline(t[ph.v0_idx], color='green', linewidth=1.2,
+                   linestyle=':', label='v=0')
+    if ph.flight_start is not None:
+        ax.axvline(t[ph.flight_start], color='blue', linewidth=1.2,
+                   linestyle='--', label='FLIGHT entry')
+    if ph.impact_idx is not None:
+        ax.axvline(t[ph.impact_idx], color='red', linewidth=1.2,
+                   label='IMPACT')
+    elif ph.flight_end is not None:
+        # No impact: show where the low-variance run (and therefore the
+        # FLIGHT span) actually ends, so the phase extent is readable
+        ax.axvline(t[ph.flight_end], color='blue', linewidth=1.0,
+                   linestyle=':', label='FLIGHT end (no impact)')
 
 
 def plot_field_diagnostic(res, save_path, show=True):
@@ -1125,47 +1244,36 @@ def plot_field_diagnostic(res, save_path, show=True):
     ax1.grid(True, alpha=0.3)
 
     ax2.semilogy(t, ph.rolling_var, color='steelblue', linewidth=0.8)
-    ax2.axhline(p.flight_var_thresh, color='purple', linewidth=1.2,
-                linestyle='--',
-                label=f'flight_var_thresh = {p.flight_var_thresh:g}')
     ax2.set_ylabel(f'rolling var of |accel| '
                    f'({p.flight_var_window:.1f} s win, log scale)')
     ax2.set_xlabel('Time (s)')
     ax2.grid(True, alpha=0.3, which='both')
 
-    # Overlay phase boundaries on BOTH subplots
+    # Overlay phase boundaries on BOTH subplots (shared helper, also used
+    # by presentation figures)
     for ax in (ax1, ax2):
-        for i, (i0, i1) in enumerate(ph.quiet_windows):
-            ax.axvspan(t[i0], t[i1], alpha=0.15, color='green',
-                       label='quiet window' if i == 0 else None)
-        if ph.onset_idx is not None:
-            ax.axvline(t[ph.onset_idx], color='orange', linewidth=1.2,
-                       label='onset')
-        if not ph.v0_fallback:
-            ax.axvline(t[ph.v0_idx], color='green', linewidth=1.2,
-                       linestyle=':', label='v=0')
-        if ph.flight_start is not None:
-            ax.axvline(t[ph.flight_start], color='blue', linewidth=1.2,
-                       linestyle='--', label='FLIGHT entry')
-        if ph.impact_idx is not None:
-            ax.axvline(t[ph.impact_idx], color='red', linewidth=1.2,
-                       label='IMPACT')
-        elif ph.flight_end is not None:
-            # No impact: show where the low-variance run (and therefore the
-            # FLIGHT span) actually ends, so the phase extent is readable
-            ax.axvline(t[ph.flight_end], color='blue', linewidth=1.0,
-                       linestyle=':', label='FLIGHT end (no impact)')
+        overlay_phase_markers(ax, res)
 
     # When detection failed, say so ON the figure: this plot exists to debug
     # exactly that case in the field
     if ph.flight_start is None:
         ax2.text(0.02, 0.95,
-                 f"No FLIGHT phase found (machine stuck at {ph.stuck_state}).\n"
-                 "Read the flight plateau off this plot and set "
-                 "flight_var_thresh above it.",
+                 f"No throw found (machine stuck at {ph.stuck_state}): "
+                 "no |accel| sample above "
+                 f"{p.onset_thresh_g:.1f} g anywhere in the log.",
                  transform=ax2.transAxes, va='top', fontsize=9,
                  bbox=dict(boxstyle='round', facecolor='lightyellow',
                            edgecolor='orange'))
+
+    # Zoom to the throw: a 60 s ring is mostly dead time and the whole
+    # event lives in the last few seconds. Context: 5 s before onset to
+    # 3 s after impact. The full record is still in the data; use
+    # plot_throw_window.py or pan the interactive window to see more.
+    if ph.onset_idx is not None:
+        x_lo = max(t[0], t[ph.onset_idx] - 5.0)
+        x_hi = t[-1] if ph.impact_idx is None else min(t[-1],
+                                                       t[ph.impact_idx] + 3.0)
+        ax1.set_xlim(x_lo, x_hi)
 
     ax1.legend(loc='upper right', fontsize=8)
     ax2.legend(loc='upper right', fontsize=8)

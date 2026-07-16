@@ -15,8 +15,17 @@ Python/Data Logs/
 # Generated link-test plots
 Python/Link Plots/
 
+# Generated presentation figures
+Python/plots_deck/
+
 # Wi-Fi credentials - copy secrets.h.example to secrets.h and fill in values
 **/secrets.h
 
 # Claude Code project instructions (local tooling context, not part of the public repo)
 CLAUDE.md
+
+# Private working docs - field notes and engineering log, not part of the public repo
+Documentation/FIELD_TEST_GUIDE.md
+Documentation/POST_FIELD_SESSION_CHANGES.md
+Documentation/ENGINEERING_NOTES.md
+
