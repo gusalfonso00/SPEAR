@@ -24,8 +24,11 @@ Python/plots_deck/
 # Claude Code project instructions (local tooling context, not part of the public repo)
 CLAUDE.md
 
-# Private working docs - field notes and engineering log, not part of the public repo
-Documentation/FIELD_TEST_GUIDE.md
-Documentation/POST_FIELD_SESSION_CHANGES.md
-Documentation/ENGINEERING_NOTES.md
+# Private docs and local-only tooling, not part of the public repo
+Documentation/
+Arduino/flash_echo/
+Python/analyze_link_tests.py
+Python/presentation_plots.py
+Python/forensic_plots.py
+Python/archive/
 

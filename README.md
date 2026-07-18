@@ -18,7 +18,7 @@ The sensor ODR is 208 Hz while the firmware polls at 100 Hz: intentional oversam
 
 ## Two data paths
 
-Field link testing showed burst packet loss of 100+ ms in exactly the orientations a thrown javelin takes, and a throw's release window is about 100 ms. So the live UDP stream (port 4210) is a health monitor, and the data of record is onboard: an 18-byte packed sample struct rings through a 108 KB buffer (60 s), frozen to LittleFS on command (UDP port 4211), then downloaded and verified over TCP (port 4212) once the javelin is retrieved. Downloads are integrity-checked (sequence continuity, timestamp monotonicity, byte counts) and auto-decoded to the same CSV format as the live stream, so the whole analysis pipeline consumes either path unchanged. Protocol details in `Documentation/BUFFER_DUMP.md`.
+Controlled link testing showed why streaming can't be trusted with a throw: rotating the javelin through 90-degree holds at 30 m found a single orientation - an antenna null - that loses 78% of packets while the other orientations lose under 2%, and a throw's release window is about 100 ms. So the live UDP stream (port 4210) is a health monitor, and the data of record is onboard: an 18-byte packed sample struct rings through a 108 KB buffer (60 s), frozen to LittleFS on command (UDP port 4211), then downloaded and verified over TCP (port 4212) once the javelin is retrieved. Downloads are integrity-checked (sequence continuity, timestamp monotonicity, byte counts) and auto-decoded to the same CSV format as the live stream, so the whole analysis pipeline consumes either path unchanged.
 
 The ring buffer is heap-allocated once at boot, before Wi-Fi initializes: a 108 KB static array does not fit the ESP32's static-data segment alongside the radio stack's own statics, while the pre-Wi-Fi heap is a single unfragmented block.
 
@@ -30,7 +30,7 @@ The ring buffer is heap-allocated once at boot, before Wi-Fi initializes: a 108 
 
 **Throw analysis** (`analyze_field_throw.py`). A phase state machine finds the throw in a 60 s record and anchors on its two loudest features: impact = the global |accel| peak (landings hit 33-49 g), flight = from the pull peak to the impact's rising edge. Velocity integrates from a v=0 anchor at the stillest second of the pre-throw hold - chosen by minimum variance rather than absolute thresholds, because a handheld hold never passes bench-grade stillness tests. The tool trims each record to the throw automatically, reports release speed and elevation angle, compares a vacuum-ballistics range prediction against the tape-measured distance, and audits data quality (sensor clipping, gyro saturation, attitude-estimate health).
 
-**Supporting tools**: link characterization (packet loss by test condition, loss-over-time with burst markers), a raw quick-look plotter, and a throw window viewer.
+**Supporting tools**: a raw quick-look plotter and a throw window viewer.
 
 ### Design notes
 
@@ -53,16 +53,10 @@ Python/
     spear_analysis.py          analysis library: params, phase detection, audits, plots
     spear_filter.py            quaternion complementary filter, gravity removal
     analyze_field_throw.py     throw analysis: trim, release state, ballistic check
-    analyze_throw.py           Step 1 demo: raw velocity integration (drift motivates Step 2)
-    analyze_throw_step2.py     Step 2 demo: attitude tracking + gravity removal
-    analyze_link_tests.py      Wi-Fi packet loss characterization
+    analyze_throw.py           raw-integration demo (the drift that motivates the filter)
     plot_throw_window.py       clipped throw viewer
     imu_plot.py                raw data quick look
     imu_calibration.json       current calibration (sphere fit, mounted)
-
-Documentation/
-    BUFFER_DUMP.md             flash capture protocol, ports, sizing, bench tests
-    esp32_pinout.png           pin reference
 ```
 
 ## Setup
