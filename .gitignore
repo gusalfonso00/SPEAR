@@ -30,5 +30,5 @@ Arduino/flash_echo/
 Python/analyze_link_tests.py
 Python/presentation_plots.py
 Python/forensic_plots.py
-Python/archive/
+Python/Archive/
 

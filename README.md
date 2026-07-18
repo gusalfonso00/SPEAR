@@ -30,7 +30,7 @@ The ring buffer is heap-allocated once at boot, before Wi-Fi initializes: a 108 
 
 **Throw analysis** (`analyze_field_throw.py`). A phase state machine finds the throw in a 60 s record and anchors on its two loudest features: impact = the global |accel| peak (landings hit 33-49 g), flight = from the pull peak to the impact's rising edge. Velocity integrates from a v=0 anchor at the stillest second of the pre-throw hold - chosen by minimum variance rather than absolute thresholds, because a handheld hold never passes bench-grade stillness tests. The tool trims each record to the throw automatically, reports release speed and elevation angle, compares a vacuum-ballistics range prediction against the tape-measured distance, and audits data quality (sensor clipping, gyro saturation, attitude-estimate health).
 
-**Supporting tools**: a raw quick-look plotter and a throw window viewer.
+**Supporting tools**: a throw window viewer for quick inspection of any capture.
 
 ### Design notes
 
@@ -53,9 +53,7 @@ Python/
     spear_analysis.py          analysis library: params, phase detection, audits, plots
     spear_filter.py            quaternion complementary filter, gravity removal
     analyze_field_throw.py     throw analysis: trim, release state, ballistic check
-    analyze_throw.py           raw-integration demo (the drift that motivates the filter)
     plot_throw_window.py       clipped throw viewer
-    imu_plot.py                raw data quick look
     imu_calibration.json       current calibration (sphere fit, mounted)
 ```
 
